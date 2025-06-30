@@ -1,6 +1,15 @@
 class NoScreenSleep {
     constructor() {
-        // DOM Elements
+        this.initElements();
+        this.initState();
+        this.initEventListeners();
+        this.setupTimers();
+        this.updateYear();
+        
+        console.log("NoScreenSleep initialized");
+    }
+
+    initElements() {
         this.toggleInput = document.getElementById('toggle-switch');
         this.toggleStatus = document.getElementById('toggle-status');
         this.timeDisplay = document.getElementById('time-display');
@@ -8,178 +17,242 @@ class NoScreenSleep {
         this.customMinutesInput = document.getElementById('custom-minutes');
         this.setTimerBtn = document.getElementById('set-timer');
         this.timerPresets = document.querySelectorAll('.timer-btn');
-        
-        // State
+    }
+
+    initState() {
         this.isActive = false;
         this.wakeLock = null;
         this.activeSeconds = 0;
-        this.timerInterval = null;
-        this.countdownInterval = null;
         this.selectedMinutes = 0;
         this.showingCountdown = false;
-        
-        // Initialize
-        this.init();
+        this.lastUpdate = performance.now();
+        this.timeCorrection = 0;
+        this.countdownInterval = null;
     }
-    
-    init() {
-        // Toggle button
-        this.toggleInput.addEventListener('change', () => {
-            this.isActive = this.toggleInput.checked;
-            this.toggleStatus.textContent = this.isActive ? "Screen is on" : "Screen is off";
-            
-            if (this.isActive) {
-                this.startSession();
-            } else {
-                this.endSession();
-                this.resetTimer();
-            }
-        });
+
+    updateYear() {
+        document.getElementById('current-year').textContent = new Date().getFullYear();
+    }
+
+    initEventListeners() {
+        this.toggleInput.addEventListener('change', () => this.handleToggleChange());
         
-        // Timer presets
         this.timerPresets.forEach(btn => {
-            btn.addEventListener('click', () => {
-                this.handleTimerSelection(btn);
-                this.activateIfTimerSet();
-            });
+            btn.addEventListener('click', () => this.handlePresetTimer(btn));
         });
         
-        // Custom timer
-        this.setTimerBtn.addEventListener('click', () => {
-            const mins = parseInt(this.customMinutesInput.value);
-            if (mins > 0 && mins <= 240) {
-                this.timerPresets.forEach(b => b.classList.remove('active'));
-                this.selectedMinutes = mins;
-                this.activateIfTimerSet();
+        this.setTimerBtn.addEventListener('click', () => this.handleCustomTimer());
+        
+        document.addEventListener('visibilitychange', () => this.handleVisibilityChange());
+        
+        window.addEventListener('focus', () => this.syncTime());
+    }
+
+    setupTimers() {
+        const updateTime = () => {
+            if (this.isActive && !this.showingCountdown) {
+                const now = performance.now();
+                const elapsed = (now - this.lastUpdate) / 1000;
+                this.activeSeconds += elapsed;
+                this.lastUpdate = now;
+                this.updateTimeDisplay();
             }
-        });
+            requestAnimationFrame(updateTime.bind(this));
+        };
+        requestAnimationFrame(updateTime.bind(this));
+    }
+
+    handleToggleChange() {
+        this.isActive = this.toggleInput.checked;
+        this.toggleStatus.textContent = this.isActive ? "Screen is on" : "Screen is off";
         
-        // Start time tracking
-        this.timerInterval = setInterval(() => this.updateTime(), 1000);
-    }
-    
-    handleTimerSelection(btn) {
-        this.timerPresets.forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-        this.selectedMinutes = parseInt(btn.dataset.minutes);
-        this.customMinutesInput.value = '';
-    }
-    
-    activateIfTimerSet() {
-        if (this.selectedMinutes > 0 && !this.isActive) {
-            this.toggleInput.checked = true;
-            const event = new Event('change');
-            this.toggleInput.dispatchEvent(event);
-        } else if (this.selectedMinutes > 0 && this.isActive) {
-            this.startCountdown();
+        if (this.isActive) {
+            this.startSession();
+        } else {
+            this.endSession();
+            this.resetTimer();
         }
     }
-    
-    startSession() {
-        // Start wake lock
-        this.attemptWakeLock();
+
+    async startSession() {
+        console.log("Starting session");
+        await this.attemptWakeLock();
+        this.startVideoFallback();
         
-        // Start video fallback
-        this.video.play().catch(e => console.log("Video fallback:", e));
-        
-        // Start countdown if timer set
         if (this.selectedMinutes > 0) {
             this.startCountdown();
         }
+        
+        this.lastUpdate = performance.now();
     }
-    
+
     endSession() {
-        // Release wake lock
-        if (this.wakeLock !== null) {
+        console.log("Ending session");
+        
+        if (this.wakeLock) {
             this.wakeLock.release();
             this.wakeLock = null;
         }
         
-        // Stop video
-        this.video.pause();
-        this.video.currentTime = 0;
-        
-        // Clear countdown
+        this.stopVideoFallback();
         this.clearCountdown();
     }
-    
-    clearCountdown() {
-        if (this.countdownInterval) {
-            clearInterval(this.countdownInterval);
-            this.countdownInterval = null;
-            this.showingCountdown = false;
+
+    async attemptWakeLock() {
+        if (!('wakeLock' in navigator)) {
+            console.log("Wake Lock API not available");
+            return;
+        }
+        
+        try {
+            this.wakeLock = await navigator.wakeLock.request('screen');
+            console.log("Wake Lock acquired");
+            
+            this.wakeLock.addEventListener('release', () => {
+                console.log("Wake Lock released");
+                if (this.isActive) this.attemptWakeLock();
+            });
+        } catch (err) {
+            console.error("Wake Lock error:", err.message);
         }
     }
-    
+
+    startVideoFallback() {
+        console.log("Starting video fallback");
+        
+        const playVideo = () => {
+            this.video.play()
+                .then(() => console.log("Video playing"))
+                .catch(e => {
+                    console.log("Video play failed:", e.message);
+                    setTimeout(playVideo, 1000);
+                });
+        };
+        
+        if (this.video.readyState >= 3) {
+            playVideo();
+        } else {
+            this.video.addEventListener('loadedmetadata', playVideo, { once: true });
+            this.video.load();
+        }
+    }
+
+    stopVideoFallback() {
+        this.video.pause();
+        this.video.currentTime = 0;
+    }
+
+    handlePresetTimer(btn) {
+        this.timerPresets.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        this.selectedMinutes = parseInt(btn.dataset.minutes);
+        this.customMinutesInput.value = '';
+        
+        if (this.isActive) {
+            this.startCountdown();
+        }
+    }
+
+    handleCustomTimer() {
+        const mins = parseInt(this.customMinutesInput.value);
+        if (mins > 0 && mins <= 240) {
+            this.timerPresets.forEach(b => b.classList.remove('active'));
+            this.selectedMinutes = mins;
+            
+            if (this.isActive) {
+                this.startCountdown();
+            }
+        } else {
+            alert("Please enter a value between 1 and 240 minutes");
+        }
+    }
+
+    startCountdown() {
+        this.clearCountdown();
+        this.showingCountdown = true;
+        
+        const endTime = Date.now() + this.selectedMinutes * 60000;
+        
+        const updateCountdown = () => {
+            const remaining = Math.max(0, endTime - Date.now());
+            const seconds = Math.round(remaining / 1000);
+            
+            this.updateCountdownDisplay(seconds);
+            
+            if (remaining <= 0) {
+                this.toggleInput.checked = false;
+                this.handleToggleChange();
+            } else {
+                this.countdownInterval = setTimeout(updateCountdown, 200);
+            }
+        };
+        
+        updateCountdown();
+    }
+
+    clearCountdown() {
+        if (this.countdownInterval) {
+            clearTimeout(this.countdownInterval);
+            this.countdownInterval = null;
+        }
+        this.showingCountdown = false;
+    }
+
+    updateCountdownDisplay(seconds) {
+        const mins = Math.floor(seconds / 60);
+        const secs = seconds % 60;
+        this.timeDisplay.textContent = 
+            `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    }
+
+    updateTimeDisplay() {
+        const totalSeconds = Math.floor(this.activeSeconds + this.timeCorrection);
+        const hours = Math.floor(totalSeconds / 3600);
+        const mins = Math.floor((totalSeconds % 3600) / 60);
+        const secs = totalSeconds % 60;
+        
+        this.timeDisplay.textContent = 
+            `${hours.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    }
+
+    handleVisibilityChange() {
+        if (document.visibilityState === 'visible' && this.isActive) {
+            this.syncTime();
+        }
+    }
+
+    syncTime() {
+        if (!this.isActive || this.showingCountdown) return;
+        
+        const now = performance.now();
+        const expectedTime = this.activeSeconds + ((now - this.lastUpdate) / 1000);
+        const actualTime = this.activeSeconds;
+        const drift = expectedTime - actualTime;
+        
+        if (drift > 1) {
+            console.log(`Correcting time drift: ${drift.toFixed(2)}s`);
+            this.timeCorrection += drift;
+        }
+        
+        this.lastUpdate = now;
+    }
+
     resetTimer() {
         this.activeSeconds = 0;
+        this.timeCorrection = 0;
         this.selectedMinutes = 0;
         this.timerPresets.forEach(b => b.classList.remove('active'));
         this.customMinutesInput.value = '';
         this.updateTimeDisplay();
     }
-    
-    async attemptWakeLock() {
-        if (!('wakeLock' in navigator)) return;
-        
-        try {
-            this.wakeLock = await navigator.wakeLock.request('screen');
-            this.wakeLock.addEventListener('release', () => {
-                if (this.isActive) this.attemptWakeLock();
-            });
-        } catch (err) {
-            console.log("Wake Lock error:", err);
-        }
-    }
-    
-    startCountdown() {
-        this.clearCountdown();
-        
-        let secondsLeft = this.selectedMinutes * 60;
-        this.updateCountdownDisplay(secondsLeft);
-        this.showingCountdown = true;
-        
-        this.countdownInterval = setInterval(() => {
-            secondsLeft--;
-            this.updateCountdownDisplay(secondsLeft);
-            
-            if (secondsLeft <= 0) {
-                this.toggleInput.checked = false;
-                const event = new Event('change');
-                this.toggleInput.dispatchEvent(event);
-                this.resetTimer();
-            }
-        }, 1000);
-    }
-    
-    updateCountdownDisplay(seconds) {
-        const mins = Math.floor(seconds / 60);
-        const secs = seconds % 60;
-        this.timeDisplay.textContent = `${mins}:${secs.toString().padStart(2, '0')}`;
-    }
-    
-    updateTime() {
-        if (this.isActive && !this.showingCountdown) {
-            this.activeSeconds++;
-            this.updateTimeDisplay();
-        }
-    }
-    
-    updateTimeDisplay() {
-        const hours = Math.floor(this.activeSeconds / 3600);
-        const mins = Math.floor((this.activeSeconds % 3600) / 60);
-        const secs = this.activeSeconds % 60;
-        this.timeDisplay.textContent = `${hours.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-    }
-    
-    toggle() {
-        this.toggleInput.checked = !this.toggleInput.checked;
-        const event = new Event('change');
-        this.toggleInput.dispatchEvent(event);
-    }
 }
 
-// Initialize when ready
+// Initialize the application
 document.addEventListener('DOMContentLoaded', () => {
-    new NoScreenSleep();
+    try {
+        new NoScreenSleep();
+    } catch (error) {
+        console.error("Initialization error:", error);
+        alert("Failed to initialize app. Please refresh the page.");
+    }
 });
